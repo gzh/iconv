@@ -162,34 +162,36 @@ data Buffers = Buffers {
 nullBuffers :: Buffers
 nullBuffers = Buffers B.nullForeignPtr 0 0 B.nullForeignPtr 0 0 0
 
--- For the output buffer we have this setup:
---
--- +-------------+-------------+----------+
--- |### poped ###|** current **|   free   |
--- +-------------+-------------+----------+
---  \           / \           / \         /
---    outOffset     outLength     outFree
---
--- The output buffer is allocated by us and pointer to by the outBuf ForeignPtr.
--- An initial prefix of the buffer that we have already poped/yielded. This bit
--- is immutable, it's already been handed out to the caller, we cannot touch it.
--- When we yield we increment the outOffset. The next part of the buffer between
--- outBuf + outOffset and outBuf + outOffset + outLength is the current bit that
--- has had output data written into it but we have not yet yielded it to the
--- caller. Finally, we have the free part of the buffer. This is the bit we
--- provide to iconv to be filled. When it is written to, we increase the
--- outLength and decrease the outLeft by the number of bytes written.
+{-
+ - For the output buffer we have this setup:
+ -
+ - +-------------+-------------+----------+
+ - |### poped ###|** current **|   free   |
+ - +-------------+-------------+----------+
+ -  \           / \           / \         /
+ -    outOffset     outLength     outFree
+ -
+ - The output buffer is allocated by us and pointer to by the outBuf ForeignPtr.
+ - An initial prefix of the buffer that we have already poped/yielded. This bit
+ - is immutable, it's already been handed out to the caller, we cannot touch it.
+ - When we yield we increment the outOffset. The next part of the buffer between
+ - outBuf + outOffset and outBuf + outOffset + outLength is the current bit that
+ - has had output data written into it but we have not yet yielded it to the
+ - caller. Finally, we have the free part of the buffer. This is the bit we
+ - provide to iconv to be filled. When it is written to, we increase the
+ - outLength and decrease the outLeft by the number of bytes written.
 
--- The input buffer layout is much simpler, it's basically just a bytestring:
---
--- +------------+------------+
--- |### done ###|  remaining |
--- +------------+------------+
---  \          / \          /
---    inOffset     inLength
---
--- So when we iconv we increase the inOffset and decrease the inLength by the
--- number of bytes read.
+ - The input buffer layout is much simpler, it's basically just a bytestring:
+ -
+ - +------------+------------+
+ - |### done ###|  remaining |
+ - +------------+------------+
+ -  \          / \          /
+ -    inOffset     inLength
+ -
+ - So when we iconv we increase the inOffset and decrease the inLength by the
+ - number of bytes read.
+ -}
 
 
 ----------------------------

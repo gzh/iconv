@@ -28,7 +28,18 @@ import Codec.Text.IConv.Internal (IConv)
 
 
 {-# NOINLINE convert #-}
-convert :: String -> String -> Lazy.ByteString -> Lazy.ByteString
+-- | Convert the encoding of characters in input text, using the underlying
+-- iconv() C library function.
+--
+-- The values permitted for input and output character set encodings and the
+-- supported combinations are system dependent.
+-- When using the GNU C or libiconv libraries, the permitted values are listed
+-- by the @iconv --list@ command, and all combinations of the listed values
+-- are supported.
+convert :: String               -- ^ Name of input character set encoding
+        -> String               -- ^ Name of output character set encoding
+        -> Lazy.ByteString      -- ^ Input text
+        -> Lazy.ByteString      -- ^ Output text
 convert fromCharset toCharset (LPS chunks) = LPS $
   IConv.run fromCharset toCharset $ do
     IConv.newOutputBuffer outChunkSize
