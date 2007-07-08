@@ -11,3 +11,8 @@ other-modules: Codec.Text.IConv.Internal
 extensions: ForeignFunctionInterface
 includes: iconv.h
 -- extra-libraries: --may need iconv lib on some systems
+
+executable: hiconv
+main-is: hiconv.hs
+hs-source-dirs: ., examples
+extensions: ForeignFunctionInterface
