@@ -18,10 +18,8 @@ module Codec.Text.IConv (
 
 import Prelude hiding (length)
 import Control.Exception (assert)
-import qualified Data.ByteString.Lazy as Lazy
-import qualified Data.ByteString as Strict
-import qualified Data.ByteString.Base as Base
-import Data.ByteString.Base (LazyByteString(LPS))
+import qualified Data.ByteString.Lazy.Internal as L
+import qualified Data.ByteString as S
 
 import qualified Codec.Text.IConv.Internal as IConv
 import Codec.Text.IConv.Internal (IConv)
@@ -36,38 +34,39 @@ import Codec.Text.IConv.Internal (IConv)
 -- When using the GNU C or libiconv libraries, the permitted values are listed
 -- by the @iconv --list@ command, and all combinations of the listed values
 -- are supported.
-convert :: String               -- ^ Name of input character set encoding
-        -> String               -- ^ Name of output character set encoding
-        -> Lazy.ByteString      -- ^ Input text
-        -> Lazy.ByteString      -- ^ Output text
-convert fromCharset toCharset (LPS chunks) = LPS $
+convert :: String            -- ^ Name of input character set encoding
+        -> String            -- ^ Name of output character set encoding
+        -> L.ByteString      -- ^ Input text
+        -> L.ByteString      -- ^ Output text
+convert fromCharset toCharset chunks =
   IConv.run fromCharset toCharset $ do
     IConv.newOutputBuffer outChunkSize
     fillInputBuffer chunks
 
 outChunkSize :: Int
-outChunkSize = 16 * 1024 - 16
+outChunkSize = L.defaultChunkSize
 
-fillInputBuffer (inChunk : inChunks) = do
+fillInputBuffer :: L.ByteString -> IConv L.ByteString
+fillInputBuffer (L.Chunk inChunk inChunks) = do
   IConv.pushInputBuffer inChunk
   drainBuffers inChunks
 
-fillInputBuffer [] = do
+fillInputBuffer L.Empty = do
   outputBufferBytesAvailable <- IConv.outputBufferBytesAvailable
   if outputBufferBytesAvailable > 0
     then do outChunk <- IConv.popOutputBuffer
             IConv.finalise
-            return (outChunk : [])
+            return (L.Chunk outChunk L.Empty)
     else do IConv.finalise
-            return []
+            return L.Empty
 
 
-drainBuffers :: [Strict.ByteString] -> IConv [Strict.ByteString]
+drainBuffers :: L.ByteString -> IConv L.ByteString
 drainBuffers inChunks = do
 
-  inputBufferEmpty <- IConv.inputBufferEmpty
+  inputBufferEmpty_ <- IConv.inputBufferEmpty
   outputBufferFull <- IConv.outputBufferFull
-  assert (not outputBufferFull && not inputBufferEmpty) $ return ()
+  assert (not outputBufferFull && not inputBufferEmpty_) $ return ()
   -- this invariant guarantees we can always make forward progress
 
   status <- IConv.iconv
@@ -82,7 +81,7 @@ drainBuffers inChunks = do
       outChunks <- IConv.unsafeInterleave $ do
         IConv.newOutputBuffer outChunkSize
         drainBuffers inChunks
-      return (outChunk : outChunks)
+      return (L.Chunk outChunk outChunks)
 
     IConv.InvalidChar -> fail "invalid char sequence at byte ..."
 
@@ -91,19 +90,19 @@ drainBuffers inChunks = do
 tmpChunkSize :: Int
 tmpChunkSize = 16
 
-fixupBoundary :: [Strict.ByteString] -> IConv [Strict.ByteString]
-fixupBoundary [] = fail "incomplete character sequence at byte ..."
-fixupBoundary inChunks@(inChunk : inChunks') = do
+fixupBoundary :: L.ByteString -> IConv L.ByteString
+fixupBoundary L.Empty = fail "incomplete character sequence at byte ..."
+fixupBoundary inChunks@(L.Chunk inChunk inChunks') = do
   inSize <- IConv.inputBufferSize
   assert (inSize < tmpChunkSize) $ return ()
   let extraBytes = tmpChunkSize - inSize
 
-  if Strict.length inChunk <= extraBytes
+  if S.length inChunk <= extraBytes
     then do
-      IConv.replaceInputBuffer (`Strict.append` inChunk)
+      IConv.replaceInputBuffer (`S.append` inChunk)
       drainBuffers inChunks'
     else do
-      IConv.replaceInputBuffer (`Strict.append` Strict.take extraBytes inChunk)
+      IConv.replaceInputBuffer (`S.append` S.take extraBytes inChunk)
 
       before <- IConv.inputBufferSize
       assert (before == tmpChunkSize) $ return ()
@@ -115,14 +114,14 @@ fixupBoundary inChunks@(inChunk : inChunks') = do
       case status of
         IConv.InputEmpty ->
           assert (consumed == tmpChunkSize) $
-          fillInputBuffer (Strict.drop extraBytes inChunk:inChunks')
+          fillInputBuffer (L.Chunk (S.drop extraBytes inChunk) inChunks')
 
         IConv.OutputFull -> do
           outChunk <- IConv.popOutputBuffer
           outChunks <- IConv.unsafeInterleave $ do
             IConv.newOutputBuffer outChunkSize
             drainBuffers inChunks
-          return (outChunk : outChunks)
+          return (L.Chunk outChunk outChunks)
 
         IConv.InvalidChar -> fail "invalid char sequence at byte ..."
 
@@ -134,13 +133,13 @@ fixupBoundary inChunks@(inChunk : inChunks') = do
           -- => { by definition that extraBytes = tmpChunkSize - inSize }
           --    0 < consumed - inSize < extraBytes
           -- => { since we're in the False case of the if, we know:
-          --        not (Strict.length inChunk <= extraBytes)
-          --      =      Strict.length inChunk > extraBytes
-          --      =      extraBytes < Strict.length inChunk }
-          --    0 < consumed - inSize < extraBytes < Strict.length inChunk
+          --        not (S.length inChunk <= extraBytes)
+          --      =      S.length inChunk > extraBytes
+          --      =      extraBytes < S.length inChunk }
+          --    0 < consumed - inSize < extraBytes < S.length inChunk
           --
           -- And we're done! We know it's safe to drop (consumed - inSize) from
           -- inChunk since it's more than 0 and less than the inChunk size, so
           -- we're not being left with an empty chunk (which is not allowed).
 
-          drainBuffers (Strict.drop (consumed - inSize) inChunk : inChunks')
+          drainBuffers (L.Chunk (S.drop (consumed - inSize) inChunk) inChunks')

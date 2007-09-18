@@ -1,18 +1,17 @@
-name: iconv
-version: 0.3
-copyright: (c) 2006-2007 Duncan Coutts
-build-depends: base
-license: BSD3
-author: Duncan Coutts <duncan@haskell.org>
-maintainer: Duncan Coutts <duncan@haskell.org>
-synopsis: String character set conversions.
+name:            iconv
+version:         0.3
+copyright:       (c) 2006-2007 Duncan Coutts
+build-depends:   base, bytestring >= 0.9
+license:         BSD3
+license-file:    LICENSE
+author:          Duncan Coutts <duncan@haskell.org>
+maintainer:      Duncan Coutts <duncan@haskell.org>
+synopsis:        String character set conversions.
+stability:       experimental
+build-type:      Simple
 exposed-modules: Codec.Text.IConv
-other-modules: Codec.Text.IConv.Internal
-extensions: ForeignFunctionInterface
-includes: iconv.h
+other-modules:   Codec.Text.IConv.Internal
+extensions:      ForeignFunctionInterface
+includes:        iconv.h
 -- extra-libraries: --may need iconv lib on some systems
-
-executable: hiconv
-main-is: hiconv.hs
-hs-source-dirs: ., examples
-extensions: ForeignFunctionInterface
+ghc-options:     -fvia-C -Wall

@@ -44,8 +44,8 @@ module Codec.Text.IConv.Internal (
 
 import Foreign
 import Foreign.C
-import qualified Data.ByteString as B
-import qualified Data.ByteString.Base as B
+import qualified Data.ByteString as S
+import qualified Data.ByteString.Internal as S
 import System.IO.Unsafe (unsafeInterleaveIO)
 import System.IO (hPutStrLn, stderr)
 import Control.Exception (assert)
@@ -53,8 +53,8 @@ import Control.Exception (assert)
 import Prelude hiding (length)
 
 
-pushInputBuffer :: B.ByteString -> IConv ()
-pushInputBuffer (B.PS inBuffer' inOffset' inLength') = do
+pushInputBuffer :: S.ByteString -> IConv ()
+pushInputBuffer (S.PS inBuffer' inOffset' inLength') = do
 
   -- must not push a new input buffer if the last one is not used up
   inAvail <- gets inLength
@@ -76,14 +76,14 @@ inputBufferSize :: IConv Int
 inputBufferSize = gets inLength
 
 
-replaceInputBuffer :: (B.ByteString -> B.ByteString) -> IConv ()
+replaceInputBuffer :: (S.ByteString -> S.ByteString) -> IConv ()
 replaceInputBuffer replace = do
   modify $ \bufs@Buffers {
     inBuffer = inBuffer,
     inOffset = inOffset,
     inLength = inLength
-  } -> case replace (B.PS inBuffer inOffset inLength) of
-         B.PS inBuffer' inOffset' inLength' ->
+  } -> case replace (S.PS inBuffer inOffset inLength) of
+         S.PS inBuffer' inOffset' inLength' ->
            bufs {
              inBuffer = inBuffer',
              inOffset = inOffset',
@@ -102,7 +102,7 @@ newOutputBuffer size = do
   -- there's only a few free bytes left.
 
   -- now set the available output buffer ptr and length
-  outBuffer <- unsafeLiftIO $ B.mallocByteString size
+  outBuffer <- unsafeLiftIO $ S.mallocByteString size
   modify $ \bufs -> bufs {
       outBuffer = outBuffer,
       outOffset = 0,
@@ -114,7 +114,7 @@ newOutputBuffer size = do
 -- get that part of the output buffer that is currently full
 -- (might be 0, use outputBufferBytesAvailable to check)
 -- this may leave some space remaining in the buffer
-popOutputBuffer :: IConv B.ByteString
+popOutputBuffer :: IConv S.ByteString
 popOutputBuffer = do
 
   Buffers {
@@ -131,7 +131,7 @@ popOutputBuffer = do
       outLength = 0
     }
 
-  return (B.PS outBuffer outOffset outLength)
+  return (S.PS outBuffer outOffset outLength)
 
 
 -- this is the number of bytes available in the output buffer
@@ -160,7 +160,7 @@ data Buffers = Buffers {
   } deriving Show
 
 nullBuffers :: Buffers
-nullBuffers = Buffers B.nullForeignPtr 0 0 B.nullForeignPtr 0 0 0
+nullBuffers = Buffers S.nullForeignPtr 0 0 S.nullForeignPtr 0 0 0
 
 {-
  - For the output buffer we have this setup:
