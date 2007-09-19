@@ -15,6 +15,7 @@ module Codec.Text.IConv.Internal (
   -- * The iconv state monad
   IConv,
   run,
+  InitStatus(..),
   unsafeInterleave,
   unsafeLiftIO,
   finalise,
@@ -214,7 +215,6 @@ instance Monad IConv where
 --  m >>= f = (m `bindI` \a -> consistencyCheck `thenI` returnI a) `bindI` f
   (>>)   = thenI
   return = returnI
-  fail   = (finalise >>) . failI
 
 returnI :: a -> IConv a
 returnI a = I $ \_ bufs -> return (bufs, a)
@@ -232,29 +232,25 @@ thenI m f = I $ \cd bufs -> do
   unI f cd bufs'
 {-# INLINE thenI #-}
 
-failI :: String -> IConv a
-failI msg = I $ \_ _ -> fail (moduleErrorPrefix ++ msg)
-
-moduleErrorPrefix :: String
-moduleErrorPrefix = "Codec.Text.IConv: "
-{-# NOINLINE moduleErrorPrefix #-}
+data InitStatus = InitOk | UnsupportedConversion | UnexpectedInitError Errno
 
 {-# NOINLINE run #-}
-run :: String -> String -> IConv a -> a
+run :: String -> String -> (InitStatus -> IConv a) -> a
 run from to m = unsafePerformIO $ do
   ptr <- withCString from $ \fromPtr ->
          withCString to $ \toPtr ->
            c_iconv_open toPtr fromPtr -- note arg reversal
 
-  if ptrToIntPtr ptr == (-1)
-    then do errno <- getErrno
-            if errno == eINVAL
-              then fail $ "cannot convert from character set "
-                       ++ show from ++ " to character set " ++ show to
-              else throwErrno (moduleErrorPrefix ++ "unexpected iconv error")
-    else do cd <- newForeignPtr c_iconv_close ptr
-            (_,a) <- unI m (ConversionDescriptor cd) nullBuffers
-            return a
+  (cd, status) <- if ptrToIntPtr ptr /= (-1)
+                    then do cd <- newForeignPtr c_iconv_close ptr
+                            return (cd, InitOk)
+                    else do errno <- getErrno
+                            cd <- newForeignPtr_ nullPtr
+                            if errno == eINVAL
+                              then return (cd, UnsupportedConversion)
+                              else return (cd, UnexpectedInitError errno)
+  (_,a) <- unI (m status) (ConversionDescriptor cd) nullBuffers
+  return a
 
 unsafeLiftIO :: IO a -> IConv a
 unsafeLiftIO m = I $ \_ bufs -> do
@@ -300,7 +296,7 @@ data Status =
        | OutputFull
        | IncompleteChar
        | InvalidChar
-  deriving Show
+       | UnexpectedError Errno
 
 iconv :: IConv Status
 iconv = I $ \(ConversionDescriptor cdfptr) bufs@Buffers {
@@ -342,11 +338,8 @@ iconv = I $ \(ConversionDescriptor cdfptr) bufs@Buffers {
                 _ | errno == e2BIG  -> return (bufs', OutputFull)
                   | errno == eINVAL -> return (bufs', IncompleteChar)
                   | errno == eILSEQ -> return (bufs', InvalidChar)
-                  | otherwise       -> throwErrno $ moduleErrorPrefix
-                                                 ++ "unexpected iconv error"
-      
-    
-      
+                  | otherwise       -> return (bufs', UnexpectedError errno)
+
   where errVal :: CSize
         errVal = (-1)   -- (size_t)(-1)
 

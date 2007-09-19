@@ -12,17 +12,48 @@
 -----------------------------------------------------------------------------
 module Codec.Text.IConv (
 
-  convert
+  -- | This module provides pure functions for converting the character
+  -- encoding of streams of data represented by lazy 'ByteString's. This makes it easy to
+  -- use either in memory or with disk or network IO.
+  --
+  -- For example, a simple Latin1 to UTF-8 conversion program is just:
+  --
+  -- > import Codec.Text.IConv as IConv
+  -- > import Data.ByteString.Lazy as ByteString
+  -- >
+  -- > main = ByteString.interact (convert "LATIN1" "UTF-8")
+  --
+  -- Or you could lazily read in and convert a UTF-8 file to UTF-32 using:
+  --
+  -- > content <- fmap (IConv.convert "UTF-8" "UTF-32") (readFile file)
+  --
+
+  -- * Simple api
+  convert,
+  Charset,
+
+  -- * Variants that are pedantic about conversion errors
+  convertStrictly,
+  convertLazily,
+  ConversionError(..),
+  reportConversionError,
+  Span,
 
   ) where
 
-import Prelude hiding (length)
+import Prelude hiding (length, span)
+import Data.List (foldl')
+
 import Control.Exception (assert)
+import qualified Control.Exception as Exception
+import Foreign.C.Error as C.Error (Errno, errnoToIOError)
+
 import qualified Data.ByteString.Lazy.Internal as L
 import qualified Data.ByteString as S
 
 import qualified Codec.Text.IConv.Internal as IConv
 import Codec.Text.IConv.Internal (IConv)
+
 
 -- | The values permitted for input and output character set encodings and the
 -- supported combinations are system dependent.
@@ -33,13 +64,89 @@ import Codec.Text.IConv.Internal (IConv)
 --
 type Charset = String
 
+-- | Output spans from character set conversion. When nothing goes wrong we
+-- expect just a bunch of 'Span's. If there are conversion errors we get other
+-- span types.
+--
+data Span =
+
+    -- | An ordinary output span of text encoded in the target charset
+    Span !S.ByteString
+
+    -- | An error in the conversion process. If this occurs it will be the
+    -- last span.
+  | ConversionError !ConversionError
+
+data ConversionError =
+    -- | The conversion from the input to output charsets is not supported by
+    -- the underlying iconv implementation. This is usually because the named
+    -- character sets is not recognised or support for them was not enabled on
+    -- this system.
+    --
+    -- The POSIX standard does not guaranteed by that all possible combinations
+    -- of recognised charsets are supported, however most common
+    -- implementations do.
+    --
+    UnsuportedConversion Charset Charset
+
+    -- | This covers two possible conversion errors:
+    --
+    -- * There is a byte sequence in the input that is not the encoding of a
+    -- character in the input charset.
+    --
+    -- * There is a valid character in the input that has no corresponding
+    -- character in the output charset.
+    --
+    -- Unfortunately iconv does not let us distinguish these two cases. In
+    -- either case, the Int parameter gives the byte offset in the input of
+    -- the unrecognised bytes or unconvertable character.
+    --
+  | InvalidChar Int
+
+    -- | This error covers the case where the end of the input has trailing
+    -- bytes that are the initial bytes of a valid character in the input
+    -- encoding. In other words, it looks like the input ended in the middle of
+    -- a multi-byte character. This would often be an indication that the input
+    -- was somehow truncated. Again, the Int parameter is the byte offset in
+    -- the input where the incomplete character starts.
+    --
+  | IncompleteChar Int
+
+    -- | An unexpected iconv error. The iconv spec lists a number of possible
+    -- expected errors but does not guarantee that there might not be other
+    -- errors.
+    --
+    -- This error can occur either immediately, which might indicate that the
+    -- iconv installation is messed up somehow, or it could occur later which
+    -- might indicate resource exhaustion or some other internal iconv error.
+    --
+    -- Use 'Foreign.C.Error.errnoToIOError' to get slightly more information
+    -- on what the error could possibly be.
+  | UnexpectedError C.Error.Errno
+
+reportConversionError :: ConversionError -> Exception.Exception
+reportConversionError conversionError = case conversionError of
+  UnsuportedConversion fromCharset toCharset
+                          -> err $ "cannot convert from character set "
+                             ++ show fromCharset ++ " to character set "
+                             ++ show toCharset
+  InvalidChar    inputPos -> err $ "invalid input sequence at byte offset "
+                               ++ show inputPos
+  IncompleteChar inputPos -> err $ "incomplete input sequence at byte offset "
+                               ++ show inputPos
+  UnexpectedError errno   -> Exception.IOException $ C.Error.errnoToIOError
+                               "Codec.Text.IConv: unexpected error" errno
+                               Nothing Nothing
+  where err msg = Exception.ErrorCall $ "Codec.Text.IConv: " ++ msg
+
+
 {-# NOINLINE convert #-}
 -- | Convert the encoding of characters in input text from one named character
 -- set to another.
 --
 -- * The conversion is done lazily.
 --
--- * If conversion between the two character sets is not possible an exception
+-- * If conversion between the two character sets is not supported an exception
 -- is thrown.
 --
 -- * Any charset conversion errors will result in an exception.
@@ -52,30 +159,82 @@ convert :: Charset           -- ^ Name of input character set encoding
         -> Charset           -- ^ Name of output character set encoding
         -> L.ByteString      -- ^ Input text
         -> L.ByteString      -- ^ Output text
-convert fromCharset toCharset chunks =
-  IConv.run fromCharset toCharset $ do
-    IConv.newOutputBuffer outChunkSize
-    fillInputBuffer chunks
+convert fromCharset toCharset =
 
-outChunkSize :: Int
-outChunkSize = L.defaultChunkSize
+    -- lazily convert the list of spans into an ordinary lazy ByteString:
+    foldr span L.Empty
+  . convertLazily fromCharset toCharset
 
-fillInputBuffer :: L.ByteString -> IConv L.ByteString
+  where
+    span (Span c) rest = L.Chunk c rest
+    span (ConversionError e) _ = Exception.throw (reportConversionError e)
+
+
+{-# NOINLINE convertStrictly #-}
+-- | This variant does the conversion all in one go, so it is able to report
+-- any conversion errors up front. It exposes all the possible error conditions
+-- and never throws exceptions
+--
+-- The disadvantage is that no output can be produced before the whole input
+-- is consumed. This might be problematic for very large inputs.
+--
+convertStrictly :: Charset           -- ^ Name of input character set encoding
+                -> Charset           -- ^ Name of output character set encoding
+                -> L.ByteString      -- ^ Input text
+                -> Either L.ByteString
+                          ConversionError -- ^ Output text or conversion error
+convertStrictly fromCharset toCharset =
+    -- strictly convert the list of spans into an ordinary lazy ByteString
+    -- or an error
+    strictify []
+  . convertLazily fromCharset toCharset
+
+  where
+    strictify :: [S.ByteString] -> [Span] -> Either L.ByteString ConversionError
+    strictify cs []                    = Left (foldl' (flip L.Chunk) L.Empty cs)
+    strictify cs (Span c : ss)         = strictify (c:cs) ss
+    strictify _  (ConversionError e:_) = Right e
+
+
+{-# NOINLINE convertLazily #-}
+-- | This version provides a more complete but less convenient conversion
+-- interface. It exposes all the possible error conditions and never throws
+-- exceptions.
+--
+-- The conversion is still lazy. It returns a list of spans, where a span may
+-- be an ordinary span of output text or a conversion error. This somewhat
+-- complex interface allows both for lazy conversion and for precise reporting
+-- of conversion problems.
+--
+convertLazily :: Charset       -- ^ Name of input character set encoding
+              -> Charset       -- ^ Name of output character set encoding
+              -> L.ByteString  -- ^ Input text
+              -> [Span]        -- ^ Output text spans
+convertLazily fromCharset toCharset chunks =
+  IConv.run fromCharset toCharset $ \status -> case status of
+    IConv.InitOk -> do IConv.newOutputBuffer outChunkSize
+                       fillInputBuffer chunks
+
+    IConv.UnsupportedConversion     -> failConversion (UnsuportedConversion
+                                                         fromCharset toCharset)
+    IConv.UnexpectedInitError errno -> failConversion (UnexpectedError errno)
+
+
+fillInputBuffer :: L.ByteString -> IConv [Span]
 fillInputBuffer (L.Chunk inChunk inChunks) = do
   IConv.pushInputBuffer inChunk
   drainBuffers inChunks
 
 fillInputBuffer L.Empty = do
   outputBufferBytesAvailable <- IConv.outputBufferBytesAvailable
+  IConv.finalise
   if outputBufferBytesAvailable > 0
     then do outChunk <- IConv.popOutputBuffer
-            IConv.finalise
-            return (L.Chunk outChunk L.Empty)
-    else do IConv.finalise
-            return L.Empty
+            return [Span outChunk]
+    else return []
 
 
-drainBuffers :: L.ByteString -> IConv L.ByteString
+drainBuffers :: L.ByteString -> IConv [Span]
 drainBuffers inChunks = do
 
   inputBufferEmpty_ <- IConv.inputBufferEmpty
@@ -95,16 +254,15 @@ drainBuffers inChunks = do
       outChunks <- IConv.unsafeInterleave $ do
         IConv.newOutputBuffer outChunkSize
         drainBuffers inChunks
-      return (L.Chunk outChunk outChunks)
+      return (Span outChunk : outChunks)
 
     IConv.InvalidChar -> do
       inputPos <- IConv.inputPosition
-      fail ("invalid input sequence at byte offset " ++ show inputPos)
+      failConversion (InvalidChar inputPos)
 
     IConv.IncompleteChar -> fixupBoundary inChunks
 
-tmpChunkSize :: Int
-tmpChunkSize = 16
+    IConv.UnexpectedError errno -> failConversion (UnexpectedError errno)
 
 -- | The posix iconv api looks like it's designed specifically for streaming
 -- and it is, except for one really really annoying corner case...
@@ -149,10 +307,10 @@ tmpChunkSize = 16
 --
 -- So yeah, pretty complex. Check out the proof below of the tricky case.
 --
-fixupBoundary :: L.ByteString -> IConv L.ByteString
+fixupBoundary :: L.ByteString -> IConv [Span]
 fixupBoundary L.Empty = do
   inputPos <- IConv.inputPosition
-  fail ("incomplete input sequence at byte offset " ++ show inputPos)
+  failConversion (IncompleteChar inputPos)
 fixupBoundary inChunks@(L.Chunk inChunk inChunks') = do
   inSize <- IConv.inputBufferSize
   assert (inSize < tmpChunkSize) $ return ()
@@ -182,12 +340,11 @@ fixupBoundary inChunks@(L.Chunk inChunk inChunks') = do
           outChunks <- IConv.unsafeInterleave $ do
             IConv.newOutputBuffer outChunkSize
             drainBuffers inChunks
-          return (L.Chunk outChunk outChunks)
+          return (Span outChunk : outChunks)
 
         IConv.InvalidChar -> do
           inputPos <- IConv.inputPosition
-          fail ("invalid input sequence at byte offset " ++ show inputPos)
-
+          failConversion (InvalidChar inputPos)
 
         IConv.IncompleteChar -> 
           assert (inSize < consumed && consumed < tmpChunkSize) $
@@ -207,3 +364,21 @@ fixupBoundary inChunks@(L.Chunk inChunk inChunks') = do
           -- we're not being left with an empty chunk (which is not allowed).
 
           drainBuffers (L.Chunk (S.drop (consumed - inSize) inChunk) inChunks')
+
+        IConv.UnexpectedError errno -> failConversion (UnexpectedError errno)
+
+
+failConversion :: ConversionError -> IConv [Span]
+failConversion err = do
+  outputBufferBytesAvailable <- IConv.outputBufferBytesAvailable
+  IConv.finalise
+  if outputBufferBytesAvailable > 0
+    then do outChunk <- IConv.popOutputBuffer
+            return [Span outChunk, ConversionError err]
+    else    return [               ConversionError err]
+
+outChunkSize :: Int
+outChunkSize = L.defaultChunkSize
+
+tmpChunkSize :: Int
+tmpChunkSize = 16
