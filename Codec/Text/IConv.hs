@@ -32,6 +32,10 @@ module Codec.Text.IConv (
   convert,
   Charset,
 
+  -- * Variant that is lax about conversion errors
+  convertFuzzy,
+  Fuzzy(..),
+
   -- * Variants that are pedantic about conversion errors
   convertStrictly,
   convertLazily,
@@ -169,6 +173,47 @@ convert fromCharset toCharset =
     span (Span c) rest = L.Chunk c rest
     span (ConversionError e) _ = Exception.throw (reportConversionError e)
 
+data Fuzzy = Transliterate | Discard
+
+-- | Convert text ignoring character conversion problems.
+--
+-- If invalid byte sequences are found in the input they are ignored and
+-- conversion continues if possible. This is not always possible especially
+-- with stateful encodings. No placeholder character is inserted into the
+-- output so there will be no indication that invalid byte sequences were
+-- encountered.
+--
+-- If there are characters in the input that have no direct corresponding
+-- character in the output encoding then they are dealt in one of two ways,
+-- depending on the 'Fuzzy' argument. We can try and 'Transliterate' them into
+-- the nearest corresponding character(s) or use a replacement character
+-- (typically @'?'@ or the Unicode replacement character). Alternatively they
+-- can simply be 'Discard'ed.
+--
+-- In either case, no exceptions will occur. In the case of unrecoverable
+-- errors, the output will simply be truncated. This includes the case of
+-- unrecognised or unsupported encoding names; the output will be empty.
+--
+-- * This function only works with the GNU iconv implementation which provides
+-- this feature beyond what is required by the iconv specification.
+--
+convertFuzzy :: Fuzzy           -- ^ Whether to try and transliterate or
+                                -- discard characters with no direct conversion
+             -> Charset         -- ^ Name of input character set encoding
+             -> Charset         -- ^ Name of output character set encoding
+             -> L.ByteString    -- ^ Input text
+             -> L.ByteString    -- ^ Output text
+convertFuzzy fuzzy fromCharset toCharset =
+
+    -- lazily convert the list of spans into an ordinary lazy ByteString:
+    foldr span L.Empty
+  . convertInternal IgnoreInvalidChar fromCharset (toCharset ++ mode)
+  where
+    mode = case fuzzy of
+             Transliterate -> "//IGNORE,TRANSLIT"
+             Discard       -> "//IGNORE"
+    span (Span c)            cs = L.Chunk c cs
+    span (ConversionError _) cs = cs
 
 {-# NOINLINE convertStrictly #-}
 -- | This variant does the conversion all in one go, so it is able to report
@@ -210,22 +255,30 @@ convertLazily :: Charset       -- ^ Name of input character set encoding
               -> Charset       -- ^ Name of output character set encoding
               -> L.ByteString  -- ^ Input text
               -> [Span]        -- ^ Output text spans
-convertLazily fromCharset toCharset chunks =
+convertLazily = convertInternal StopOnInvalidChar
+
+
+data InvalidCharBehaviour = StopOnInvalidChar | IgnoreInvalidChar
+
+convertInternal :: InvalidCharBehaviour
+                -> Charset -> Charset
+                -> L.ByteString -> [Span]
+convertInternal ignore fromCharset toCharset chunks =
   IConv.run fromCharset toCharset $ \status -> case status of
     IConv.InitOk -> do IConv.newOutputBuffer outChunkSize
-                       fillInputBuffer chunks
+                       fillInputBuffer ignore chunks
 
     IConv.UnsupportedConversion     -> failConversion (UnsuportedConversion
                                                          fromCharset toCharset)
     IConv.UnexpectedInitError errno -> failConversion (UnexpectedError errno)
 
 
-fillInputBuffer :: L.ByteString -> IConv [Span]
-fillInputBuffer (L.Chunk inChunk inChunks) = do
+fillInputBuffer :: InvalidCharBehaviour -> L.ByteString -> IConv [Span]
+fillInputBuffer ignore (L.Chunk inChunk inChunks) = do
   IConv.pushInputBuffer inChunk
-  drainBuffers inChunks
+  drainBuffers ignore inChunks
 
-fillInputBuffer L.Empty = do
+fillInputBuffer _ignore L.Empty = do
   outputBufferBytesAvailable <- IConv.outputBufferBytesAvailable
   IConv.finalise
   if outputBufferBytesAvailable > 0
@@ -234,9 +287,8 @@ fillInputBuffer L.Empty = do
     else return []
 
 
-drainBuffers :: L.ByteString -> IConv [Span]
-drainBuffers inChunks = do
-
+drainBuffers :: InvalidCharBehaviour -> L.ByteString -> IConv [Span]
+drainBuffers ignore inChunks = do
   inputBufferEmpty_ <- IConv.inputBufferEmpty
   outputBufferFull <- IConv.outputBufferFull
   assert (not outputBufferFull && not inputBufferEmpty_) $ return ()
@@ -247,20 +299,18 @@ drainBuffers inChunks = do
   case status of
     IConv.InputEmpty -> do
       inputBufferEmpty <- IConv.inputBufferEmpty
-      assert inputBufferEmpty $ fillInputBuffer inChunks
+      assert inputBufferEmpty $ fillInputBuffer ignore inChunks
 
     IConv.OutputFull -> do
       outChunk <- IConv.popOutputBuffer
       outChunks <- IConv.unsafeInterleave $ do
         IConv.newOutputBuffer outChunkSize
-        drainBuffers inChunks
+        drainBuffers ignore inChunks
       return (Span outChunk : outChunks)
 
-    IConv.InvalidChar -> do
-      inputPos <- IConv.inputPosition
-      failConversion (InvalidChar inputPos)
+    IConv.InvalidChar -> invalidChar ignore inChunks
 
-    IConv.IncompleteChar -> fixupBoundary inChunks
+    IConv.IncompleteChar -> fixupBoundary ignore inChunks
 
     IConv.UnexpectedError errno -> failConversion (UnexpectedError errno)
 
@@ -307,11 +357,11 @@ drainBuffers inChunks = do
 --
 -- So yeah, pretty complex. Check out the proof below of the tricky case.
 --
-fixupBoundary :: L.ByteString -> IConv [Span]
-fixupBoundary L.Empty = do
+fixupBoundary :: InvalidCharBehaviour -> L.ByteString -> IConv [Span]
+fixupBoundary _ignore L.Empty = do
   inputPos <- IConv.inputPosition
   failConversion (IncompleteChar inputPos)
-fixupBoundary inChunks@(L.Chunk inChunk inChunks') = do
+fixupBoundary ignore inChunks@(L.Chunk inChunk inChunks') = do
   inSize <- IConv.inputBufferSize
   assert (inSize < tmpChunkSize) $ return ()
   let extraBytes = tmpChunkSize - inSize
@@ -319,7 +369,7 @@ fixupBoundary inChunks@(L.Chunk inChunk inChunks') = do
   if S.length inChunk <= extraBytes
     then do
       IConv.replaceInputBuffer (`S.append` inChunk)
-      drainBuffers inChunks'
+      drainBuffers ignore inChunks'
     else do
       IConv.replaceInputBuffer (`S.append` S.take extraBytes inChunk)
 
@@ -333,18 +383,16 @@ fixupBoundary inChunks@(L.Chunk inChunk inChunks') = do
       case status of
         IConv.InputEmpty ->
           assert (consumed == tmpChunkSize) $
-          fillInputBuffer (L.Chunk (S.drop extraBytes inChunk) inChunks')
+          fillInputBuffer ignore (L.Chunk (S.drop extraBytes inChunk) inChunks')
 
         IConv.OutputFull -> do
           outChunk <- IConv.popOutputBuffer
           outChunks <- IConv.unsafeInterleave $ do
             IConv.newOutputBuffer outChunkSize
-            drainBuffers inChunks
+            drainBuffers ignore inChunks
           return (Span outChunk : outChunks)
 
-        IConv.InvalidChar -> do
-          inputPos <- IConv.inputPosition
-          failConversion (InvalidChar inputPos)
+        IConv.InvalidChar -> invalidChar ignore inChunks
 
         IConv.IncompleteChar -> 
           assert (inSize < consumed && consumed < tmpChunkSize) $
@@ -363,10 +411,36 @@ fixupBoundary inChunks@(L.Chunk inChunk inChunks') = do
           -- inChunk since it's more than 0 and less than the inChunk size, so
           -- we're not being left with an empty chunk (which is not allowed).
 
-          drainBuffers (L.Chunk (S.drop (consumed - inSize) inChunk) inChunks')
+          drainBuffers ignore (L.Chunk (S.drop (consumed - inSize) inChunk) inChunks')
 
         IConv.UnexpectedError errno -> failConversion (UnexpectedError errno)
 
+
+invalidChar :: InvalidCharBehaviour -> L.ByteString -> IConv [Span]
+invalidChar StopOnInvalidChar _ = do
+  inputPos <- IConv.inputPosition
+  failConversion (InvalidChar inputPos)
+
+invalidChar IgnoreInvalidChar inChunks = do
+  inputPos  <- IConv.inputPosition
+  let invalidCharError = ConversionError (InvalidChar inputPos)
+  outputBufferBytesAvailable <- IConv.outputBufferBytesAvailable
+  if outputBufferBytesAvailable > 0
+    then do outChunk  <- IConv.popOutputBuffer
+            outChunks <- IConv.unsafeInterleave $ do
+              IConv.newOutputBuffer outChunkSize
+              inputBufferEmpty <- IConv.inputBufferEmpty
+              if inputBufferEmpty
+                then fillInputBuffer IgnoreInvalidChar inChunks
+                else drainBuffers    IgnoreInvalidChar inChunks
+            return (Span outChunk : invalidCharError : outChunks)
+    else do outChunks <- IConv.unsafeInterleave $ do
+              IConv.newOutputBuffer outChunkSize
+              inputBufferEmpty <- IConv.inputBufferEmpty
+              if inputBufferEmpty
+                then fillInputBuffer IgnoreInvalidChar inChunks
+                else drainBuffers    IgnoreInvalidChar inChunks
+            return (invalidCharError : outChunks)
 
 failConversion :: ConversionError -> IConv [Span]
 failConversion err = do
