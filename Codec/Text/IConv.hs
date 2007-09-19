@@ -90,7 +90,9 @@ drainBuffers inChunks = do
         drainBuffers inChunks
       return (L.Chunk outChunk outChunks)
 
-    IConv.InvalidChar -> fail "invalid char sequence at byte ..."
+    IConv.InvalidChar -> do
+      inputPos <- IConv.inputPosition
+      fail ("invalid input sequence at byte offset " ++ show inputPos)
 
     IConv.IncompleteChar -> fixupBoundary inChunks
 
@@ -98,7 +100,9 @@ tmpChunkSize :: Int
 tmpChunkSize = 16
 
 fixupBoundary :: L.ByteString -> IConv L.ByteString
-fixupBoundary L.Empty = fail "incomplete character sequence at byte ..."
+fixupBoundary L.Empty = do
+  inputPos <- IConv.inputPosition
+  fail ("incomplete input sequence at byte offset " ++ show inputPos)
 fixupBoundary inChunks@(L.Chunk inChunk inChunks') = do
   inSize <- IConv.inputBufferSize
   assert (inSize < tmpChunkSize) $ return ()
@@ -130,7 +134,10 @@ fixupBoundary inChunks@(L.Chunk inChunk inChunks') = do
             drainBuffers inChunks
           return (L.Chunk outChunk outChunks)
 
-        IConv.InvalidChar -> fail "invalid char sequence at byte ..."
+        IConv.InvalidChar -> do
+          inputPos <- IConv.inputPosition
+          fail ("invalid input sequence at byte offset " ++ show inputPos)
+
 
         IConv.IncompleteChar -> 
           assert (inSize < consumed && consumed < tmpChunkSize) $

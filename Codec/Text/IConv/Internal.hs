@@ -28,6 +28,7 @@ module Codec.Text.IConv.Internal (
   pushInputBuffer,
   inputBufferSize,
   inputBufferEmpty,
+  inputPosition,
   replaceInputBuffer,
 
   -- ** Output buffer
@@ -74,6 +75,10 @@ inputBufferEmpty = gets ((==0) . inLength)
 
 inputBufferSize :: IConv Int
 inputBufferSize = gets inLength
+
+
+inputPosition :: IConv Int
+inputPosition = gets inTotal
 
 
 replaceInputBuffer :: (S.ByteString -> S.ByteString) -> IConv ()
@@ -153,6 +158,7 @@ data Buffers = Buffers {
     inBuffer  :: {-# UNPACK #-} !(ForeignPtr Word8), -- ^ Current input buffer
     inOffset  :: {-# UNPACK #-} !Int,                -- ^ Current read offset
     inLength  :: {-# UNPACK #-} !Int,                -- ^ Input bytes left
+    inTotal   :: {-# UNPACK #-} !Int,                -- ^ Total read offset
     outBuffer :: {-# UNPACK #-} !(ForeignPtr Word8), -- ^ Current output buffer
     outOffset :: {-# UNPACK #-} !Int,                -- ^ Base out offset
     outLength :: {-# UNPACK #-} !Int,                -- ^ Available output bytes
@@ -160,7 +166,7 @@ data Buffers = Buffers {
   } deriving Show
 
 nullBuffers :: Buffers
-nullBuffers = Buffers S.nullForeignPtr 0 0 S.nullForeignPtr 0 0 0
+nullBuffers = Buffers S.nullForeignPtr 0 0 0 S.nullForeignPtr 0 0 0
 
 {-
  - For the output buffer we have this setup:
@@ -302,6 +308,7 @@ iconv = I $ \(ConversionDescriptor cdfptr) bufs@Buffers {
     inBuffer  = inBuffer,
     inOffset  = inOffset,
     inLength  = inLength,
+    inTotal   = inTotal,
     outBuffer = outBuffer,
     outOffset = outOffset,
     outLength = outLength,
@@ -319,10 +326,13 @@ iconv = I $ \(ConversionDescriptor cdfptr) bufs@Buffers {
     result <- c_iconv cdPtr inBufPtrPtr inLengthPtr outBufPtrPtr outFreePtr
     inLength' <- fromIntegral `fmap` peek inLengthPtr
     outFree'  <- fromIntegral `fmap` peek outFreePtr
-    let bufs' = bufs {
-            inOffset  = inOffset + (inLength - inLength'),
+    let inByteCount   = inLength - inLength'
+        outByteCount  = outFree  - outFree'
+        bufs' = bufs {
+            inOffset  = inOffset  + inByteCount,
             inLength  = inLength',
-            outLength = outLength + (outFree - outFree'),
+            inTotal   = inTotal   + inByteCount,
+            outLength = outLength + outByteCount,
             outFree   = outFree'
           }
     if result /= errVal
