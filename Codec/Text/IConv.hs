@@ -24,18 +24,25 @@ import qualified Data.ByteString as S
 import qualified Codec.Text.IConv.Internal as IConv
 import Codec.Text.IConv.Internal (IConv)
 
+-- | The values permitted for input and output character set encodings and the
+-- supported combinations are system dependent.
+--
+-- When using the GNU C or libiconv libraries, the permitted values are listed
+-- by the @iconv --list@ command, and all combinations of the listed values
+-- are supported.
+--
+type Charset = String
 
 {-# NOINLINE convert #-}
 -- | Convert the encoding of characters in input text, using the underlying
 -- iconv() C library function.
 --
--- The values permitted for input and output character set encodings and the
--- supported combinations are system dependent.
--- When using the GNU C or libiconv libraries, the permitted values are listed
--- by the @iconv --list@ command, and all combinations of the listed values
--- are supported.
-convert :: String            -- ^ Name of input character set encoding
-        -> String            -- ^ Name of output character set encoding
+-- The conversion is done lazily. Any charset conversion errors will result
+-- in an exception. For more control over conversion errors use
+-- 'convertCarefully'.
+--
+convert :: Charset           -- ^ Name of input character set encoding
+        -> Charset           -- ^ Name of output character set encoding
         -> L.ByteString      -- ^ Input text
         -> L.ByteString      -- ^ Output text
 convert fromCharset toCharset chunks =
