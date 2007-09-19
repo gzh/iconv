@@ -7,14 +7,14 @@
 -- Stability   :  experimental
 -- Portability :  portable (H98 + FFI)
 --
--- Character set conversions.
+-- String encoding conversion
 --
 -----------------------------------------------------------------------------
 module Codec.Text.IConv (
 
-  -- | This module provides pure functions for converting the character
-  -- encoding of streams of data represented by lazy 'ByteString's. This makes it easy to
-  -- use either in memory or with disk or network IO.
+  -- | This module provides pure functions for converting the string encoding
+  -- of strings represented by lazy 'ByteString's. This makes it easy to use
+  -- either in memory or with disk or network IO.
   --
   -- For example, a simple Latin1 to UTF-8 conversion program is just:
   --
@@ -27,10 +27,16 @@ module Codec.Text.IConv (
   --
   -- > content <- fmap (IConv.convert "UTF-8" "UTF-32") (readFile file)
   --
+  -- This module uses the POSIX @iconv()@ library function. The primary
+  -- advantage of using iconv is that it is widely available, most systems
+  -- have a wide range of supported string encodings and the conversion speed
+  -- it typically good. The iconv library is available on all unix systems
+  -- (since it is required by the POSIX.1 standard) and GNU libiconv is
+  -- available as a standalone library for other systems, including Windows.
 
-  -- * Simple api
+  -- * Simple conversion API
   convert,
-  Charset,
+  EncodingName,
 
   -- * Variant that is lax about conversion errors
   convertFuzzy,
@@ -41,7 +47,7 @@ module Codec.Text.IConv (
   convertLazily,
   ConversionError(..),
   reportConversionError,
-  Span,
+  Span(..),
 
   ) where
 
@@ -59,22 +65,24 @@ import qualified Codec.Text.IConv.Internal as IConv
 import Codec.Text.IConv.Internal (IConv)
 
 
--- | The values permitted for input and output character set encodings and the
--- supported combinations are system dependent.
+-- | A string encoding name, eg @\"UTF-8\"@ or @\"LATIN1\"@.
+--
+-- The range of string encodings available is determined by the capabilities
+-- of the underlying iconv implementation.
 --
 -- When using the GNU C or libiconv libraries, the permitted values are listed
 -- by the @iconv --list@ command, and all combinations of the listed values
 -- are supported.
 --
-type Charset = String
+type EncodingName = String
 
--- | Output spans from character set conversion. When nothing goes wrong we
+-- | Output spans from encoding conversion. When nothing goes wrong we
 -- expect just a bunch of 'Span's. If there are conversion errors we get other
 -- span types.
 --
 data Span =
 
-    -- | An ordinary output span of text encoded in the target charset
+    -- | An ordinary output span in the target encoding
     Span !S.ByteString
 
     -- | An error in the conversion process. If this occurs it will be the
@@ -82,24 +90,24 @@ data Span =
   | ConversionError !ConversionError
 
 data ConversionError =
-    -- | The conversion from the input to output charsets is not supported by
-    -- the underlying iconv implementation. This is usually because the named
-    -- character sets is not recognised or support for them was not enabled on
-    -- this system.
+    -- | The conversion from the input to output string encoding is not
+    -- supported by the underlying iconv implementation. This is usually
+    -- because a named encoding is not recognised or support for it
+    -- was not enabled on this system.
     --
-    -- The POSIX standard does not guaranteed by that all possible combinations
-    -- of recognised charsets are supported, however most common
-    -- implementations do.
+    -- The POSIX standard does not guarantee that all possible combinations
+    -- of recognised string encoding are supported, however most common
+    -- implementations do support all possible combinations.
     --
-    UnsuportedConversion Charset Charset
+    UnsuportedConversion EncodingName EncodingName
 
     -- | This covers two possible conversion errors:
     --
-    -- * There is a byte sequence in the input that is not the encoding of a
-    -- character in the input charset.
+    -- * There is a byte sequence in the input that is not valid in the input
+    -- encoding.
     --
     -- * There is a valid character in the input that has no corresponding
-    -- character in the output charset.
+    -- character in the output encoding.
     --
     -- Unfortunately iconv does not let us distinguish these two cases. In
     -- either case, the Int parameter gives the byte offset in the input of
@@ -126,14 +134,15 @@ data ConversionError =
     --
     -- Use 'Foreign.C.Error.errnoToIOError' to get slightly more information
     -- on what the error could possibly be.
+    --
   | UnexpectedError C.Error.Errno
 
 reportConversionError :: ConversionError -> Exception.Exception
 reportConversionError conversionError = case conversionError of
-  UnsuportedConversion fromCharset toCharset
-                          -> err $ "cannot convert from character set "
-                             ++ show fromCharset ++ " to character set "
-                             ++ show toCharset
+  UnsuportedConversion fromEncoding toEncoding
+                          -> err $ "cannot convert from string encoding "
+                             ++ show fromEncoding ++ " to string encoding "
+                             ++ show toEncoding
   InvalidChar    inputPos -> err $ "invalid input sequence at byte offset "
                                ++ show inputPos
   IncompleteChar inputPos -> err $ "incomplete input sequence at byte offset "
@@ -145,37 +154,33 @@ reportConversionError conversionError = case conversionError of
 
 
 {-# NOINLINE convert #-}
--- | Convert the encoding of characters in input text from one named character
--- set to another.
+-- | Convert text from one named string encoding to another.
 --
 -- * The conversion is done lazily.
 --
--- * If conversion between the two character sets is not supported an exception
--- is thrown.
+-- * An exception is thrown if conversion between the two encodings is not
+-- supported.
 --
--- * Any charset conversion errors will result in an exception.
+-- * An exception is thrown if there are any encoding conversion errors.
 --
--- It uses the POSIX @iconv()@ library function. The range of available
--- character sets is determined by the capabilities of the underlying iconv
--- implementation.
---
-convert :: Charset           -- ^ Name of input character set encoding
-        -> Charset           -- ^ Name of output character set encoding
+convert :: EncodingName      -- ^ Name of input string encoding
+        -> EncodingName      -- ^ Name of output string encoding
         -> L.ByteString      -- ^ Input text
         -> L.ByteString      -- ^ Output text
-convert fromCharset toCharset =
+convert fromEncoding toEncoding =
 
     -- lazily convert the list of spans into an ordinary lazy ByteString:
     foldr span L.Empty
-  . convertLazily fromCharset toCharset
+  . convertLazily fromEncoding toEncoding
 
   where
-    span (Span c) rest = L.Chunk c rest
-    span (ConversionError e) _ = Exception.throw (reportConversionError e)
+    span (Span c)            cs = L.Chunk c cs
+    span (ConversionError e) _  = Exception.throw (reportConversionError e)
+
 
 data Fuzzy = Transliterate | Discard
 
--- | Convert text ignoring character conversion problems.
+-- | Convert text ignoring encoding conversion problems.
 --
 -- If invalid byte sequences are found in the input they are ignored and
 -- conversion continues if possible. This is not always possible especially
@@ -187,7 +192,7 @@ data Fuzzy = Transliterate | Discard
 -- character in the output encoding then they are dealt in one of two ways,
 -- depending on the 'Fuzzy' argument. We can try and 'Transliterate' them into
 -- the nearest corresponding character(s) or use a replacement character
--- (typically @'?'@ or the Unicode replacement character). Alternatively they
+-- (typically @\'?\'@ or the Unicode replacement character). Alternatively they
 -- can simply be 'Discard'ed.
 --
 -- In either case, no exceptions will occur. In the case of unrecoverable
@@ -199,15 +204,15 @@ data Fuzzy = Transliterate | Discard
 --
 convertFuzzy :: Fuzzy           -- ^ Whether to try and transliterate or
                                 -- discard characters with no direct conversion
-             -> Charset         -- ^ Name of input character set encoding
-             -> Charset         -- ^ Name of output character set encoding
+             -> EncodingName    -- ^ Name of input string encoding
+             -> EncodingName    -- ^ Name of output string encoding
              -> L.ByteString    -- ^ Input text
              -> L.ByteString    -- ^ Output text
-convertFuzzy fuzzy fromCharset toCharset =
+convertFuzzy fuzzy fromEncoding toEncoding =
 
     -- lazily convert the list of spans into an ordinary lazy ByteString:
     foldr span L.Empty
-  . convertInternal IgnoreInvalidChar fromCharset (toCharset ++ mode)
+  . convertInternal IgnoreInvalidChar fromEncoding (toEncoding ++ mode)
   where
     mode = case fuzzy of
              Transliterate -> "//IGNORE,TRANSLIT"
@@ -223,16 +228,16 @@ convertFuzzy fuzzy fromCharset toCharset =
 -- The disadvantage is that no output can be produced before the whole input
 -- is consumed. This might be problematic for very large inputs.
 --
-convertStrictly :: Charset           -- ^ Name of input character set encoding
-                -> Charset           -- ^ Name of output character set encoding
+convertStrictly :: EncodingName      -- ^ Name of input string encoding
+                -> EncodingName      -- ^ Name of output string encoding
                 -> L.ByteString      -- ^ Input text
                 -> Either L.ByteString
                           ConversionError -- ^ Output text or conversion error
-convertStrictly fromCharset toCharset =
+convertStrictly fromEncoding toEncoding =
     -- strictly convert the list of spans into an ordinary lazy ByteString
     -- or an error
     strictify []
-  . convertLazily fromCharset toCharset
+  . convertLazily fromEncoding toEncoding
 
   where
     strictify :: [S.ByteString] -> [Span] -> Either L.ByteString ConversionError
@@ -249,10 +254,11 @@ convertStrictly fromCharset toCharset =
 -- The conversion is still lazy. It returns a list of spans, where a span may
 -- be an ordinary span of output text or a conversion error. This somewhat
 -- complex interface allows both for lazy conversion and for precise reporting
--- of conversion problems.
+-- of conversion problems. The other functions 'convert' and 'convertStrictly'
+-- are actually simple wrappers on this function.
 --
-convertLazily :: Charset       -- ^ Name of input character set encoding
-              -> Charset       -- ^ Name of output character set encoding
+convertLazily :: EncodingName  -- ^ Name of input string encoding
+              -> EncodingName  -- ^ Name of output string encoding
               -> L.ByteString  -- ^ Input text
               -> [Span]        -- ^ Output text spans
 convertLazily = convertInternal StopOnInvalidChar
@@ -261,15 +267,16 @@ convertLazily = convertInternal StopOnInvalidChar
 data InvalidCharBehaviour = StopOnInvalidChar | IgnoreInvalidChar
 
 convertInternal :: InvalidCharBehaviour
-                -> Charset -> Charset
+                -> EncodingName -> EncodingName
                 -> L.ByteString -> [Span]
-convertInternal ignore fromCharset toCharset chunks =
-  IConv.run fromCharset toCharset $ \status -> case status of
+convertInternal ignore fromEncoding toEncoding chunks =
+  IConv.run fromEncoding toEncoding $ \status -> case status of
     IConv.InitOk -> do IConv.newOutputBuffer outChunkSize
                        fillInputBuffer ignore chunks
 
     IConv.UnsupportedConversion     -> failConversion (UnsuportedConversion
-                                                         fromCharset toCharset)
+                                                         fromEncoding
+                                                         toEncoding)
     IConv.UnexpectedInitError errno -> failConversion (UnexpectedError errno)
 
 

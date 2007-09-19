@@ -6,7 +6,9 @@ license:         BSD3
 license-file:    LICENSE
 author:          Duncan Coutts <duncan@haskell.org>
 maintainer:      Duncan Coutts <duncan@haskell.org>
-synopsis:        String character set conversions.
+synopsis:        String encoding conversion
+description:     Provides an interface to the POSIX iconv library functions
+                 for string encoding conversion.
 stability:       experimental
 build-type:      Simple
 exposed-modules: Codec.Text.IConv
