@@ -34,12 +34,19 @@ import Codec.Text.IConv.Internal (IConv)
 type Charset = String
 
 {-# NOINLINE convert #-}
--- | Convert the encoding of characters in input text, using the underlying
--- iconv() C library function.
+-- | Convert the encoding of characters in input text from one named character
+-- set to another.
 --
--- The conversion is done lazily. Any charset conversion errors will result
--- in an exception. For more control over conversion errors use
--- 'convertCarefully'.
+-- * The conversion is done lazily.
+--
+-- * If conversion between the two character sets is not possible an exception
+-- is thrown.
+--
+-- * Any charset conversion errors will result in an exception.
+--
+-- It uses the POSIX @iconv()@ library function. The range of available
+-- character sets is determined by the capabilities of the underlying iconv
+-- implementation.
 --
 convert :: Charset           -- ^ Name of input character set encoding
         -> Charset           -- ^ Name of output character set encoding
@@ -99,6 +106,49 @@ drainBuffers inChunks = do
 tmpChunkSize :: Int
 tmpChunkSize = 16
 
+-- | The posix iconv api looks like it's designed specifically for streaming
+-- and it is, except for one really really annoying corner case...
+--
+-- Suppose you're converting a stream, say by reading a file in 4k chunks. This
+-- would seem to be the canonical use case for iconv, reading and converting an
+-- input file. However suppose the 4k read chunk happens to split a multi-byte
+-- character. Then iconv will stop just before that char and tell us that its
+-- an incomplete char. So far so good. Now what we'd like to do is have iconv
+-- remember those last few bytes in its conversion state so we can carry on
+-- with the next 4k block. Sadly it does not. It requires us to fix things up
+-- so that it can carry on with the next block starting with a complete multi-
+-- byte character. Do do that we have to somehow copy those few trailing bytes
+-- to the beginning of the next block. That's perhaps not too bad in an
+-- imperitive context using a mutable input buffer - we'd just copy the few
+-- trailing bytes to the beginning of the buffer and do a short read (ie 4k-n
+-- the number of trailing bytes). That's not terribly nice since it means the
+-- OS has to do IO on non-page aligned buffers which tends to be slower. It's
+-- worse for us though since we're not using a mutable input buffer, we're
+-- using a lazy bytestring which is a sequence of immutable buffers.
+--
+-- So we have to do more cunning things. We could just prepend the trailing
+-- bytes to the next block, but that would mean alocating and copying the whole
+-- next block just to prepend a couple bytes. This probably happens quite
+-- frequently so would be pretty slow. So we have to be even more cunning.
+--
+-- The solution is to create a very small buffer to cover the few bytes making
+-- up the character spanning the block boundary. So we copy the trailing bytes
+-- plus a few from the beginning of the next block. Then we run iconv again on
+-- that small buffer. How many bytes from the next block to copy is a slightly
+-- tricky issue. If we copy too few there's no guarantee that we have enough to
+-- give a complete character. We opt for a maximum size of 16, 'tmpChunkSize'
+-- on the theory that no encoding in existance uses that many bytes to encode a
+-- single character, so it ought to be enough. Yeah, it's a tad dodgey.
+--
+-- Having papered over the block boundary, we still have to cross the boundary
+-- of this small buffer. It looks like we've still got the same problem,
+-- however this time we should have crossed over into bytes that are wholly
+-- part of the large following block so we can abandon our small temp buffer
+-- an continue with the following block, with a slight offset for the few bytes
+-- taken up by the chars that fit into the small buffer.
+--
+-- So yeah, pretty complex. Check out the proof below of the tricky case.
+--
 fixupBoundary :: L.ByteString -> IConv L.ByteString
 fixupBoundary L.Empty = do
   inputPos <- IConv.inputPosition

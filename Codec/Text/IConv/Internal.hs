@@ -45,7 +45,6 @@ module Codec.Text.IConv.Internal (
 
 import Foreign
 import Foreign.C
-import qualified Data.ByteString as S
 import qualified Data.ByteString.Internal as S
 import System.IO.Unsafe (unsafeInterleaveIO)
 import System.IO (hPutStrLn, stderr)
@@ -315,6 +314,7 @@ iconv = I $ \(ConversionDescriptor cdfptr) bufs@Buffers {
     outFree   = outFree
   } ->
   assert (outFree > 0) $
+  --TODO: optimise all this allocation
   withForeignPtr cdfptr                              $ \cdPtr -> 
   withForeignPtr inBuffer                            $ \inBufPtr ->
   with (inBufPtr `plusPtr` inOffset)                 $ \inBufPtrPtr ->
