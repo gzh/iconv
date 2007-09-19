@@ -17,3 +17,4 @@ extensions:      ForeignFunctionInterface
 includes:        iconv.h
 -- extra-libraries: --may need iconv lib on some systems
 ghc-options:     -fvia-C -Wall
+extra-source-files: README examples/hiconv.hs
