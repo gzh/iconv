@@ -52,13 +52,12 @@ module Codec.Text.IConv (
   ) where
 
 import Prelude hiding (length, span)
-import Data.List (foldl')
 
 import Control.Exception (assert)
 import qualified Control.Exception as Exception
 import Foreign.C.Error as C.Error (Errno, errnoToIOError)
 
-import qualified Data.ByteString.Lazy.Internal as L
+import qualified Data.ByteString.Lazy as L (ByteString, toChunks, fromChunks)
 import qualified Data.ByteString as S
 
 import qualified Codec.Text.IConv.Internal as IConv
@@ -170,11 +169,12 @@ convert :: EncodingName      -- ^ Name of input string encoding
 convert fromEncoding toEncoding =
 
     -- lazily convert the list of spans into an ordinary lazy ByteString:
-    foldr span L.Empty
+    L.fromChunks
+  . foldr span []
   . convertLazily fromEncoding toEncoding
 
   where
-    span (Span c)            cs = L.Chunk c cs
+    span (Span c)            cs = c : cs
     span (ConversionError e) _  = Exception.throw (reportConversionError e)
 
 
@@ -211,13 +211,14 @@ convertFuzzy :: Fuzzy           -- ^ Whether to try and transliterate or
 convertFuzzy fuzzy fromEncoding toEncoding =
 
     -- lazily convert the list of spans into an ordinary lazy ByteString:
-    foldr span L.Empty
+    L.fromChunks
+  . foldr span []
   . convertInternal IgnoreInvalidChar fromEncoding (toEncoding ++ mode)
   where
     mode = case fuzzy of
              Transliterate -> "//IGNORE,TRANSLIT"
              Discard       -> "//IGNORE"
-    span (Span c)            cs = L.Chunk c cs
+    span (Span c)            cs = c : cs
     span (ConversionError _) cs = cs
 
 {-# NOINLINE convertStrictly #-}
@@ -241,7 +242,7 @@ convertStrictly fromEncoding toEncoding =
 
   where
     strictify :: [S.ByteString] -> [Span] -> Either L.ByteString ConversionError
-    strictify cs []                    = Left (foldl' (flip L.Chunk) L.Empty cs)
+    strictify cs []                    = Left (L.fromChunks (reverse cs))
     strictify cs (Span c : ss)         = strictify (c:cs) ss
     strictify _  (ConversionError e:_) = Right e
 
@@ -269,10 +270,10 @@ data InvalidCharBehaviour = StopOnInvalidChar | IgnoreInvalidChar
 convertInternal :: InvalidCharBehaviour
                 -> EncodingName -> EncodingName
                 -> L.ByteString -> [Span]
-convertInternal ignore fromEncoding toEncoding chunks =
+convertInternal ignore fromEncoding toEncoding input =
   IConv.run fromEncoding toEncoding $ \status -> case status of
     IConv.InitOk -> do IConv.newOutputBuffer outChunkSize
-                       fillInputBuffer ignore chunks
+                       fillInputBuffer ignore (L.toChunks input)
 
     IConv.UnsupportedConversion     -> failConversion (UnsuportedConversion
                                                          fromEncoding
@@ -280,12 +281,12 @@ convertInternal ignore fromEncoding toEncoding chunks =
     IConv.UnexpectedInitError errno -> failConversion (UnexpectedError errno)
 
 
-fillInputBuffer :: InvalidCharBehaviour -> L.ByteString -> IConv [Span]
-fillInputBuffer ignore (L.Chunk inChunk inChunks) = do
+fillInputBuffer :: InvalidCharBehaviour -> [S.ByteString] -> IConv [Span]
+fillInputBuffer ignore (inChunk : inChunks) = do
   IConv.pushInputBuffer inChunk
   drainBuffers ignore inChunks
 
-fillInputBuffer _ignore L.Empty = do
+fillInputBuffer _ignore [] = do
   outputBufferBytesAvailable <- IConv.outputBufferBytesAvailable
   IConv.finalise
   if outputBufferBytesAvailable > 0
@@ -294,7 +295,7 @@ fillInputBuffer _ignore L.Empty = do
     else return []
 
 
-drainBuffers :: InvalidCharBehaviour -> L.ByteString -> IConv [Span]
+drainBuffers :: InvalidCharBehaviour -> [S.ByteString] -> IConv [Span]
 drainBuffers ignore inChunks = do
   inputBufferEmpty_ <- IConv.inputBufferEmpty
   outputBufferFull <- IConv.outputBufferFull
@@ -364,11 +365,11 @@ drainBuffers ignore inChunks = do
 --
 -- So yeah, pretty complex. Check out the proof below of the tricky case.
 --
-fixupBoundary :: InvalidCharBehaviour -> L.ByteString -> IConv [Span]
-fixupBoundary _ignore L.Empty = do
+fixupBoundary :: InvalidCharBehaviour -> [S.ByteString] -> IConv [Span]
+fixupBoundary _ignore [] = do
   inputPos <- IConv.inputPosition
   failConversion (IncompleteChar inputPos)
-fixupBoundary ignore inChunks@(L.Chunk inChunk inChunks') = do
+fixupBoundary ignore inChunks@(inChunk : inChunks') = do
   inSize <- IConv.inputBufferSize
   assert (inSize < tmpChunkSize) $ return ()
   let extraBytes = tmpChunkSize - inSize
@@ -390,7 +391,7 @@ fixupBoundary ignore inChunks@(L.Chunk inChunk inChunks') = do
       case status of
         IConv.InputEmpty ->
           assert (consumed == tmpChunkSize) $
-          fillInputBuffer ignore (L.Chunk (S.drop extraBytes inChunk) inChunks')
+          fillInputBuffer ignore (S.drop extraBytes inChunk : inChunks')
 
         IConv.OutputFull -> do
           outChunk <- IConv.popOutputBuffer
@@ -418,12 +419,12 @@ fixupBoundary ignore inChunks@(L.Chunk inChunk inChunks') = do
           -- inChunk since it's more than 0 and less than the inChunk size, so
           -- we're not being left with an empty chunk (which is not allowed).
 
-          drainBuffers ignore (L.Chunk (S.drop (consumed - inSize) inChunk) inChunks')
+          drainBuffers ignore (S.drop (consumed - inSize) inChunk : inChunks')
 
         IConv.UnexpectedError errno -> failConversion (UnexpectedError errno)
 
 
-invalidChar :: InvalidCharBehaviour -> L.ByteString -> IConv [Span]
+invalidChar :: InvalidCharBehaviour -> [S.ByteString] -> IConv [Span]
 invalidChar StopOnInvalidChar _ = do
   inputPos <- IConv.inputPosition
   failConversion (InvalidChar inputPos)
@@ -459,7 +460,13 @@ failConversion err = do
     else    return [               ConversionError err]
 
 outChunkSize :: Int
+#ifdef BYTESTRING_IN_BASE
+outChunkSize = 32 * k - overhead
+   where k = 1024
+         overhead = 16
+#else
 outChunkSize = L.defaultChunkSize
+#endif
 
 tmpChunkSize :: Int
 tmpChunkSize = 16

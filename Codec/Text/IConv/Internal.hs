@@ -46,7 +46,11 @@ module Codec.Text.IConv.Internal (
 
 import Foreign
 import Foreign.C
+#ifdef BYTESTRING_IN_BASE
+import qualified Data.ByteString.Base as S
+#else
 import qualified Data.ByteString.Internal as S
+#endif
 import System.IO.Unsafe (unsafeInterleaveIO)
 import System.IO (hPutStrLn, stderr)
 import Control.Exception (assert)
