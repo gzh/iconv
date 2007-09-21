@@ -7,22 +7,22 @@
     -h, -?       --help, --usage       Display this help and exit
     -f encoding  --from-code=encoding  Convert characters from encoding
     -t encoding  --to-code=encoding    Convert characters to encoding
+    -c           --discard             Discard invalid characters from output
+                 --transliterate       Transliterate unconvertable characters
     -o file      --output=file         Specify output file (instead of stdout)
 
  -}
 
 module Main where
 
-import qualified Data.ByteString.Lazy as Lazy
-
-import Control.Monad
-
+import Control.Monad (when)
 import System.Environment (getArgs, getProgName)
-import System.Console.GetOpt
+import System.Console.GetOpt (getOpt, usageInfo,
+                              OptDescr(..), ArgDescr(..), ArgOrder(..))
+import System.Exit (exitFailure)
 
-import System.Exit
-
-import Codec.Text.IConv
+import qualified Data.ByteString.Lazy as Lazy
+import qualified Codec.Text.IConv as IConv
 
 ------------------------------------------------------------
 -- main
@@ -38,7 +38,10 @@ main = do
         "-" -> Lazy.getContents
         _   -> Lazy.readFile inputFile
 
-    let output = convert (fromEncoding config) (toEncoding config) input
+    let convert = case fuzzyConvert config of
+                    Nothing   -> IConv.convert
+                    Just fuzz -> IConv.convertFuzzy fuzz
+        output = convert (fromEncoding config) (toEncoding config) input
         o = outputFile config
 
     case o of
@@ -53,6 +56,7 @@ data Config =
     Config {
         fromEncoding :: String,
         toEncoding :: String,
+	fuzzyConvert :: Maybe IConv.Fuzzy,
         outputFile :: FilePath
     }
 
@@ -60,12 +64,14 @@ defaultConfig =
     Config {
         fromEncoding = "",
         toEncoding = "",
+	fuzzyConvert = Nothing,
         outputFile = "-"
     }
 
 data Option = Help
             | FromEncoding String
             | ToEncoding String
+	    | Discard | Translit
             | OutputFile String
             deriving Eq
 
@@ -76,6 +82,10 @@ options = [ Option ['h', '?'] ["help", "usage"] (NoArg Help)
               "Convert characters from encoding"
           , Option ['t'] ["to-code"] (ReqArg ToEncoding "encoding")
               "Convert characters to encoding"
+	  , Option ['c'] ["discard"]       (NoArg Discard)
+	      "Discard invalid characters from output"
+	  , Option []    ["transliterate"] (NoArg Translit)
+	      "Transliterate unconvertable characters"
           , Option ['o'] ["output"] (ReqArg OutputFile "file")
               "Specify output file (instead of stdout)"
           ]
@@ -83,17 +93,19 @@ options = [ Option ['h', '?'] ["help", "usage"] (NoArg Help)
 processArgs :: [String] -> IO (Config, [String])
 processArgs args = do
     case getOpt Permute options args of
-        (opts, args, []) -> do
+        (opts, args, errs) -> do
             processHelp opts
-            config <- processConfig defaultConfig opts
-            checkConfig (config, args)
+            let config = processConfig defaultConfig opts
+            checkConfig errs config args
             return (config, args)
 
-checkConfig :: (Config, [String]) -> IO ()
-checkConfig (config, filenames) = do
+checkConfig :: [String] -> Config -> [String] -> IO ()
+checkConfig errs config filenames = do
     when (any null [fromEncoding config, toEncoding config] || null filenames) $
       processHelp [Help]
-    return ()
+    when (not (null errs)) $ do
+      mapM_ putStr errs
+      processHelp [Help]
 
 processHelp :: [Option] -> IO ()
 processHelp opts = do
@@ -101,15 +113,18 @@ processHelp opts = do
     let header = "\nUsage: " ++ name ++ " [options] filename\n"
     when (Help `elem` opts) $ do
         putStrLn $ usageInfo header options
-        exitWith ExitSuccess
-    return ()
+        exitFailure
 
-processConfig :: Config -> [Option] -> IO Config
-processConfig = foldM processOneOption
+processConfig :: Config -> [Option] -> Config
+processConfig = foldl processOneOption
     where
         processOneOption config (FromEncoding f) =
-            return $ config {fromEncoding = f}
+            config {fromEncoding = f}
         processOneOption config (ToEncoding t) =
-            return $ config {toEncoding = t}
+            config {toEncoding = t}
         processOneOption config (OutputFile o) =
-            return $ config {outputFile = o}
+            config {outputFile = o}
+        processOneOption config Discard =
+	    config {fuzzyConvert = Just IConv.Discard}
+        processOneOption config Translit =
+            config {fuzzyConvert = Just IConv.Transliterate}
