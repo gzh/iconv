@@ -58,6 +58,9 @@ import qualified Control.Exception as Exception
 import Foreign.C.Error as C.Error (Errno, errnoToIOError)
 
 import qualified Data.ByteString.Lazy as L (ByteString, toChunks, fromChunks)
+#ifndef BYTESTRING_IN_BASE
+import qualified Data.ByteString.Lazy.Internal as L (defaultChunkSize)
+#endif
 import qualified Data.ByteString as S
 
 import qualified Codec.Text.IConv.Internal as IConv

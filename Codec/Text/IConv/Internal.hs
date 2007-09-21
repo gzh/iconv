@@ -255,6 +255,10 @@ run from to m = unsafePerformIO $ do
                               else return (cd, UnexpectedInitError errno)
   (_,a) <- unI (m status) (ConversionDescriptor cd) nullBuffers
   return a
+#if __GLASGOW_HASKELL__<=604
+  where ptrToIntPtr :: Ptr a -> Int
+        ptrToIntPtr p = p `minusPtr` nullPtr
+#endif
 
 unsafeLiftIO :: IO a -> IConv a
 unsafeLiftIO m = I $ \_ bufs -> do
