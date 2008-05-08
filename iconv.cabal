@@ -1,10 +1,11 @@
 name:            iconv
-version:         0.4
-copyright:       (c) 2006-2007 Duncan Coutts
+version:         0.4.0.1
+copyright:       (c) 2006-2008 Duncan Coutts
 license:         BSD3
 license-file:    LICENSE
 author:          Duncan Coutts <duncan@haskell.org>
 maintainer:      Duncan Coutts <duncan@haskell.org>
+category:        Text
 synopsis:        String encoding conversion
 description:     Provides an interface to the POSIX iconv library functions
                  for string encoding conversion.
@@ -26,5 +27,8 @@ library
     build-depends: base < 2.0 || >= 2.2, bytestring >= 0.9
   extensions:      CPP, ForeignFunctionInterface
   includes:        iconv.h
-  -- extra-libraries: --may need iconv lib on some systems
-  ghc-options:     -fvia-C -Wall
+  if os(darwin) || os(freebsd)
+    -- on many systems the iconv api is part of the standard C library
+    -- but on some others we have to link to an external libiconv:
+    extra-libraries: iconv
+  ghc-options:     -Wall
