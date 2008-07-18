@@ -1,5 +1,5 @@
 name:            iconv
-version:         0.4.0.1
+version:         0.4.0.2
 copyright:       (c) 2006-2008 Duncan Coutts
 license:         BSD3
 license-file:    LICENSE
@@ -31,4 +31,7 @@ library
     -- on many systems the iconv api is part of the standard C library
     -- but on some others we have to link to an external libiconv:
     extra-libraries: iconv
-  ghc-options:     -Wall
+
+  -- We need to compile via C because on some platforms (notably darwin)
+  -- iconv is a macro rather than real C function. doh!
+  ghc-options:     -fvia-C -Wall
