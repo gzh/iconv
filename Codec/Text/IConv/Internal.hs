@@ -345,12 +345,12 @@ finalise = I $ \(ConversionDescriptor cd) bufs -> do
 
 newtype ConversionDescriptor = ConversionDescriptor (ForeignPtr ConversionDescriptor) -- iconv_t
 
-foreign import ccall unsafe "iconv.h iconv_open"
+foreign import ccall unsafe "hsiconv.h hs_wrap_iconv_open"
   c_iconv_open :: CString  -- to code
                -> CString  -- from code
                -> IO (Ptr ConversionDescriptor)
 
-foreign import ccall unsafe "iconv.h iconv"
+foreign import ccall unsafe "hsiconv.h hs_wrap_iconv"
   c_iconv :: Ptr ConversionDescriptor
           -> Ptr (Ptr CChar)  -- in buf
           -> Ptr CSize        -- in buf bytes left
@@ -358,5 +358,5 @@ foreign import ccall unsafe "iconv.h iconv"
           -> Ptr CSize        -- out buf bytes left
           -> IO CSize
 
-foreign import ccall unsafe "iconv.h &iconv_close"
+foreign import ccall unsafe "hsiconv.h &hs_wrap_iconv_close"
   c_iconv_close :: FinalizerPtr ConversionDescriptor

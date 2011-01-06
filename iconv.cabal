@@ -12,7 +12,7 @@ description:     Provides an interface to the POSIX iconv library functions
 stability:       experimental
 build-type:      Simple
 cabal-version:   >= 1.2.1
-extra-source-files: README examples/hiconv.hs
+extra-source-files: README examples/hiconv.hs cbits/hsiconv.h
 
 library
   exposed-modules: Codec.Text.IConv
@@ -20,12 +20,12 @@ library
   build-depends:   base >= 3 && < 5,
                    bytestring == 0.9.*
   extensions:      ForeignFunctionInterface
-  includes:        iconv.h
+  includes:        hsiconv.h
+  include-dirs:    cbits
+  c-sources:       cbits/hsiconv.c
   if os(darwin) || os(freebsd)
     -- on many systems the iconv api is part of the standard C library
     -- but on some others we have to link to an external libiconv:
     extra-libraries: iconv
 
-  -- We need to compile via C because on some platforms (notably darwin)
-  -- iconv is a macro rather than real C function. doh!
-  ghc-options:     -fvia-C -Wall
+  ghc-options: -Wall
