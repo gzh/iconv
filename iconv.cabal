@@ -9,7 +9,6 @@ category:        Text
 synopsis:        String encoding conversion
 description:     Provides an interface to the POSIX iconv library functions
                  for string encoding conversion.
-stability:       experimental
 build-type:      Simple
 cabal-version:   >= 1.2.1
 extra-source-files: README examples/hiconv.hs cbits/hsiconv.h
