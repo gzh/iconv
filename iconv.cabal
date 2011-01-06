@@ -3,8 +3,8 @@ version:         0.4.0.2
 copyright:       (c) 2006-2008 Duncan Coutts
 license:         BSD3
 license-file:    LICENSE
-author:          Duncan Coutts <duncan@haskell.org>
-maintainer:      Duncan Coutts <duncan@haskell.org>
+author:          Duncan Coutts <duncan@community.haskell.org>
+maintainer:      Duncan Coutts <duncan@community.haskell.org>
 category:        Text
 synopsis:        String encoding conversion
 description:     Provides an interface to the POSIX iconv library functions
