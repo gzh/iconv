@@ -62,7 +62,7 @@ pushInputBuffer (S.PS inBuffer' inOffset' inLength') = do
   assert (inAvail == 0) $ return ()
 
   -- now set the available input buffer ptr and length
-  modify $ \bufs -> bufs { 
+  modify $ \bufs -> bufs {
     inBuffer = inBuffer',
     inOffset = inOffset',
     inLength = inLength'
@@ -82,18 +82,15 @@ inputPosition = gets inTotal
 
 
 replaceInputBuffer :: (S.ByteString -> S.ByteString) -> IConv ()
-replaceInputBuffer replace = do
-  modify $ \bufs@Buffers {
-    inBuffer = inBuffer,
-    inOffset = inOffset,
-    inLength = inLength
-  } -> case replace (S.PS inBuffer inOffset inLength) of
-         S.PS inBuffer' inOffset' inLength' ->
-           bufs {
-             inBuffer = inBuffer',
-             inOffset = inOffset',
-             inLength = inLength'
-           }
+replaceInputBuffer replace =
+  modify $ \bufs ->
+    case replace (S.PS (inBuffer bufs) (inOffset bufs) (inLength bufs)) of
+      S.PS inBuffer' inOffset' inLength' ->
+        bufs {
+          inBuffer = inBuffer',
+          inOffset = inOffset',
+          inLength = inLength'
+        }
 
 
 newOutputBuffer :: Int -> IConv ()
@@ -107,9 +104,9 @@ newOutputBuffer size = do
   -- there's only a few free bytes left.
 
   -- now set the available output buffer ptr and length
-  outBuffer <- unsafeLiftIO $ S.mallocByteString size
+  outBuffer' <- unsafeLiftIO $ S.mallocByteString size
   modify $ \bufs -> bufs {
-      outBuffer = outBuffer,
+      outBuffer = outBuffer',
       outOffset = 0,
       outLength = 0,
       outFree   = size
@@ -122,21 +119,17 @@ newOutputBuffer size = do
 popOutputBuffer :: IConv S.ByteString
 popOutputBuffer = do
 
-  Buffers {
-    outBuffer = outBuffer,
-    outOffset = outOffset,
-    outLength = outLength
-    } <- get
+  bufs <- get
 
   -- there really should be something to pop, otherwise it's silly
-  assert (outLength > 0) $ return ()
+  assert (outLength bufs > 0) $ return ()
 
   modify $ \buf -> buf {
-      outOffset = outOffset + outLength,
+      outOffset = outOffset bufs + outLength bufs,
       outLength = 0
     }
 
-  return (S.PS outBuffer outOffset outLength)
+  return (S.PS (outBuffer bufs) (outOffset bufs) (outLength bufs))
 
 
 -- this is the number of bytes available in the output buffer
@@ -261,8 +254,8 @@ unsafeLiftIO m = I $ \_ bufs -> do
 -- between running this and forcing the result then you'll get an inconsistent
 -- iconv state.
 unsafeInterleave :: IConv a -> IConv a
-unsafeInterleave m = I $ \iconv st -> do
-  res <- unsafeInterleaveIO (unI m iconv st)
+unsafeInterleave m = I $ \cd st -> do
+  res <- unsafeInterleaveIO (unI m cd st)
   return (st, snd res)
 
 get :: IConv Buffers
@@ -299,36 +292,28 @@ data Status =
        | UnexpectedError Errno
 
 iconv :: IConv Status
-iconv = I $ \(ConversionDescriptor cdfptr) bufs@Buffers {
-    inBuffer  = inBuffer,
-    inOffset  = inOffset,
-    inLength  = inLength,
-    inTotal   = inTotal,
-    outBuffer = outBuffer,
-    outOffset = outOffset,
-    outLength = outLength,
-    outFree   = outFree
-  } ->
-  assert (outFree > 0) $
+iconv = I $ \(ConversionDescriptor cdfptr) bufs ->
+  assert (outFree bufs > 0) $
   --TODO: optimise all this allocation
-  withForeignPtr cdfptr                              $ \cdPtr -> 
-  withForeignPtr inBuffer                            $ \inBufPtr ->
-  with (inBufPtr `plusPtr` inOffset)                 $ \inBufPtrPtr ->
-  with (fromIntegral inLength)                       $ \inLengthPtr ->
-  withForeignPtr outBuffer                           $ \outBufPtr ->
-  with (outBufPtr `plusPtr` (outOffset + outLength)) $ \outBufPtrPtr ->
-  with (fromIntegral outFree)                        $ \outFreePtr -> do
-    
+  withForeignPtr cdfptr                   $ \cdPtr ->
+  withForeignPtr (inBuffer bufs)          $ \inBufPtr ->
+  with (inBufPtr `plusPtr` inOffset bufs) $ \inBufPtrPtr ->
+  with (fromIntegral (inLength bufs))     $ \inLengthPtr ->
+  withForeignPtr (outBuffer bufs)         $ \outBufPtr ->
+  let outBufPtr' = outBufPtr `plusPtr` (outOffset bufs + outLength bufs) in
+  with outBufPtr'                         $ \outBufPtrPtr ->
+  with (fromIntegral (outFree bufs))      $ \outFreePtr -> do
+
     result <- c_iconv cdPtr inBufPtrPtr inLengthPtr outBufPtrPtr outFreePtr
     inLength' <- fromIntegral `fmap` peek inLengthPtr
     outFree'  <- fromIntegral `fmap` peek outFreePtr
-    let inByteCount   = inLength - inLength'
-        outByteCount  = outFree  - outFree'
+    let inByteCount   = inLength bufs - inLength'
+        outByteCount  = outFree bufs  - outFree'
         bufs' = bufs {
-            inOffset  = inOffset  + inByteCount,
+            inOffset  = inOffset bufs + inByteCount,
             inLength  = inLength',
-            inTotal   = inTotal   + inByteCount,
-            outLength = outLength + outByteCount,
+            inTotal   = inTotal bufs   + inByteCount,
+            outLength = outLength bufs + outByteCount,
             outFree   = outFree'
           }
     if result /= errVal

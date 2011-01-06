@@ -403,7 +403,7 @@ fixupBoundary ignore inChunks@(inChunk : inChunks') = do
 
         IConv.InvalidChar -> invalidChar ignore inChunks
 
-        IConv.IncompleteChar -> 
+        IConv.IncompleteChar ->
           assert (inSize < consumed && consumed < tmpChunkSize) $
           --    inSize < consumed < tmpChunkSize
           -- => { subtract inSize from each side }
