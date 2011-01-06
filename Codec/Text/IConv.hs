@@ -58,9 +58,7 @@ import qualified Control.Exception as Exception
 import Foreign.C.Error as C.Error (Errno, errnoToIOError)
 
 import qualified Data.ByteString.Lazy as L (ByteString, toChunks, fromChunks)
-#ifndef BYTESTRING_IN_BASE
 import qualified Data.ByteString.Lazy.Internal as L (defaultChunkSize)
-#endif
 import qualified Data.ByteString as S
 
 import qualified Codec.Text.IConv.Internal as IConv
@@ -463,13 +461,7 @@ failConversion err = do
     else    return [               ConversionError err]
 
 outChunkSize :: Int
-#ifdef BYTESTRING_IN_BASE
-outChunkSize = 32 * k - overhead
-   where k = 1024
-         overhead = 16
-#else
 outChunkSize = L.defaultChunkSize
-#endif
 
 tmpChunkSize :: Int
 tmpChunkSize = 16
