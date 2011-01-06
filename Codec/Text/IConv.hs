@@ -5,7 +5,6 @@
 -- License     :  BSD-style
 --
 -- Maintainer  :  duncan@haskell.org
--- Stability   :  experimental
 -- Portability :  portable (H98 + FFI)
 --
 -- String encoding conversion
