@@ -1,3 +1,4 @@
+{-# LANGUAGE CPP #-}
 -----------------------------------------------------------------------------
 -- |
 -- Copyright   :  (c) 2006-2007 Duncan Coutts
@@ -137,7 +138,7 @@ data ConversionError =
     --
   | UnexpectedError C.Error.Errno
 
-reportConversionError :: ConversionError -> Exception.Exception
+reportConversionError :: ConversionError -> IOError
 reportConversionError conversionError = case conversionError of
   UnsuportedConversion fromEncoding toEncoding
                           -> err $ "cannot convert from string encoding "
@@ -147,11 +148,10 @@ reportConversionError conversionError = case conversionError of
                                ++ show inputPos
   IncompleteChar inputPos -> err $ "incomplete input sequence at byte offset "
                                ++ show inputPos
-  UnexpectedError errno   -> Exception.IOException $ C.Error.errnoToIOError
+  UnexpectedError errno   -> C.Error.errnoToIOError
                                "Codec.Text.IConv: unexpected error" errno
                                Nothing Nothing
-  where err msg = Exception.ErrorCall $ "Codec.Text.IConv: " ++ msg
-
+  where err msg = userError $ "Codec.Text.IConv: " ++ msg
 
 {-# NOINLINE convert #-}
 -- | Convert text from one named string encoding to another.
@@ -176,7 +176,12 @@ convert fromEncoding toEncoding =
 
   where
     span (Span c)            cs = c : cs
-    span (ConversionError e) _  = Exception.throw (reportConversionError e)
+    span (ConversionError e) _  =
+#if MIN_VERSION_base(4,0,0)
+      Exception.throw (reportConversionError e)
+#else
+      Exception.throw (Exception.IOException (reportConversionError e))
+#endif
 
 
 data Fuzzy = Transliterate | Discard
