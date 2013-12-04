@@ -43,10 +43,10 @@ module Codec.Text.IConv.Internal (
   trace
   ) where
 
-import Foreign
+import Foreign hiding (unsafePerformIO)
 import Foreign.C
 import qualified Data.ByteString.Internal as S
-import System.IO.Unsafe (unsafeInterleaveIO)
+import System.IO.Unsafe (unsafeInterleaveIO, unsafePerformIO)
 import System.IO (hPutStrLn, stderr)
 import Control.Exception (assert)
 
