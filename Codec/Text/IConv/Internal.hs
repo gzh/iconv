@@ -49,6 +49,8 @@ import qualified Data.ByteString.Internal as S
 import System.IO.Unsafe (unsafeInterleaveIO, unsafePerformIO)
 import System.IO (hPutStrLn, stderr)
 import Control.Exception (assert)
+import Control.Applicative
+import Control.Monad (ap)
 
 import Prelude hiding (length)
 
@@ -201,6 +203,13 @@ newtype IConv a = I {
         -> Buffers
         -> IO (Buffers, a)
   }
+
+instance Functor IConv where
+  fmap f a = a >>= returnI . f
+
+instance Applicative IConv where
+  pure  = returnI
+  (<*>) = ap
 
 instance Monad IConv where
   (>>=)  = bindI
