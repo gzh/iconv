@@ -11,7 +11,7 @@ description:     Provides an interface to the POSIX iconv library functions
                  for string encoding conversion.
 build-type:      Simple
 cabal-version:   >= 1.6
-extra-source-files: README examples/hiconv.hs cbits/hsiconv.h
+extra-source-files: changelog.md README.md examples/hiconv.hs cbits/hsiconv.h
 
 source-repository head
   type: darcs
