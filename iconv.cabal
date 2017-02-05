@@ -30,5 +30,7 @@ library
     -- on many systems the iconv api is part of the standard C library
     -- but on some others we have to link to an external libiconv:
     extra-libraries: iconv
+  if of(windows)
+    extra-libraries: iconv-2
 
   ghc-options: -Wall
